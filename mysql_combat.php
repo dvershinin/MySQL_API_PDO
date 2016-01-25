@@ -8,7 +8,341 @@
  * $ 25.01.2016 21:03 Charlotte Dunois $
 **/
 
-if(version_compare(PHP_VERSION, '7.0', '<')) {
+class MySQL_API_PDO {
+	public $query_time = 0;
+	public $query_count = 0; 
+	private $connect = array('host' => '', 'user' => '', 'password' => '', 'db' => '');
+	private $current_link = NULL;
+	private $db = NULL;
+	private $emulate_prepare = true;
+	static protected $instance = NULL;
+	
+	function __construct() {
+		
+	}
+	
+	function __destruct() {
+		
+	}
+	
+	private function __clone() {
+		
+	}
+	
+	private function __wakeup() {
+		
+	}
+	
+	/* Returns if the class emulates prepared statements */
+	function getPrepare() {
+		return $this->emulate_prepare;
+	}
+	
+	/* Tells the class to stop (or start) emulating prepared statements */
+	function noPrepare($val) {
+		$this->emulate_prepare = !(bool) $val;
+	}
+	
+	static function app() {
+		if(self::$instance === NULL OR is_a(self::$instance, 'MySQL_API_PDO') === false) {
+			self::$instance = new MySQL_API_PDO();
+		}
+		
+		return self::$instance;
+	}
+	
+	function connect_db($host, $user, $password, $db, $driver = array()) {
+		$this->get_execution_time();
+		
+		try {
+			$this->db = new PDO("mysql:host=".$host.";dbname=".$db.";charset=".DB_CONNECT_CHARSET, $user, $password, $driver);
+			$this->db->setAttribute(PDO::ATTR_EMULATE_PREPARES, false);
+			$this->db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+			
+			$this->connect = array('host' => $host, 'user' => $user, 'password' => $password, 'db' => $db);
+		} catch(PDOException $e) {
+			throw new Exception("Unable to connect. Error: ".$e->getMessage());
+		}
+		
+		$time_spent = $this->get_execution_time();
+		$this->query_time += $time_spent;
+		
+		return $this->db;
+	}
+	
+	function connect_new_db($dbname) {
+		return $this->db->exec("USE ".$dbname);
+	}
+	
+	function get_databasename() {
+		return $this->connect['db'];
+	}
+	
+	function close_link() {
+		if(is_a($this->current_link, 'PDOStatement')) {
+			@$this->current_link->closeCursor();
+		}
+		
+		$this->current_link = NULL;
+		$this->db = NULL;
+	}
+	
+	function check_db_uptime() {
+		if(!is_a($this->db, 'PDO')) {
+			$this->close_link();
+			$this->db = $this->connect_db($connect['host'], $connect['user'], $connect['password'], $connect['db']);
+		} else {
+			try {
+				$sql = $this->db->query("SELECT 1");
+				if($sql === false) {
+					$this->close_link();
+					$this->db = $this->connect_db($connect['host'], $connect['user'], $connect['password'], $connect['db']);
+				}
+			} catch(PDOException $e) {
+				$this->close_link();
+				$this->db = $this->connect_db($connect['host'], $connect['user'], $connect['password'], $connect['db']);
+			}
+		}
+	}
+	
+	function getAttribute($attr) {
+		return $this->db->getAttribute($attr);
+	}
+	
+	function query($query) {
+		$this->get_execution_time();
+		
+		if(!defined('NO_PREPARE') AND $this->emulate_prepare === true AND strpos($query, 'WHERE') !== false) {
+			$new = $this->prepare_where($query);
+			$query = $new['query'];
+			$values = $new['values'];
+		} else {
+			$values = array();
+		}
+		
+		try {
+			if(!empty($values)) {
+				$this->current_link = $this->db->prepare($query);
+				$this->current_link->execute($values);
+			} else {
+				$this->current_link = $this->db->query($query);
+			}
+		} catch(PDOException $e) {
+			throw new Exception("SQL Error: ".$e->getMessage()." | Query: ".$query);
+		}
+		
+		$time_spent = $this->get_execution_time();
+		$this->query_time += $time_spent;
+		$this->query_count++;
+		
+		return $this->current_link;
+	}
+	
+	private function prepare_where($query) {
+		$strpos_where = strpos($query, 'WHERE') + 6;
+		$strpos_limit = (int) strpos($query, 'LIMIT');
+		$strpos_group = (int) strpos($query, 'GROUP BY');
+		$strpos_order = (int) strpos($query, 'ORDER BY');
+		
+		$new_query = substr($query, 0, $strpos_where);
+		if($strpos_limit > 0 AND $strpos_limit < $strpos_group AND $strpos_limit < $strpos_order) {
+			$where = substr($query, $strpos_where, $strpos_limit);
+			$new_subquery = substr($query, $strpos_limit);
+		} elseif($strpos_group > 0 AND $strpos_group < $strpos_limit AND $strpos_group < $strpos_order) {
+			$where = substr($query, $strpos_where, $strpos_group);
+			$new_subquery = substr($query, $strpos_group);
+		} elseif($strpos_order > 0 AND $strpos_order < $strpos_limit AND $strpos_order < $strpos_group) {
+			$where = substr($query, $strpos_where, $strpos_order);
+			$new_subquery = substr($query, $strpos_order);
+		} else {
+			$where = substr($query, $strpos_where);
+			$new_subquery = "";
+		}
+		
+		$where_values = array();
+		$where_break = explode(' AND ', $where);
+		$where_break_c = count($where_break);
+		
+		for($i = 0; $i < $where_break_c; $i++) {
+			if(!isset($where_break[$i])) {
+				continue;
+			}
+			
+			if(isset($where_break[$i + 1]) AND preg_match('/([\`a-z0-9\_\-]+)[\s]{0,1}(\=|LIKE|\<|\>|\<\=|\>\=|!\=)[\s]{0,1}(.*)/i', $where_break[$i + 1]) != 1) {
+				$where_break[$i] = $where_break[$i]." AND ".$where_break[$i + 1];
+				unset($where_break[$i + 1]);
+			}
+			
+			$where_break_or = explode(' OR ', $where_break[$i]);
+			$where_break_or_c = count($where_break_or);
+			for($j = 0; $j < $where_break_or_c; $j++) {
+				if(!isset($where_break_or[$i])) {
+					continue;
+				}
+				
+				if(isset($where_break_or[$j + 1]) AND preg_match('/([\`a-z0-9\_\-]+)[\s]{0,1}(\=|LIKE|\<|\>|\<\=|\>\=|!\=)[\s]{0,1}(.*)/i', $where_break_or[$j + 1]) != 1) {
+					$where_break_or[$j] = $where_break_or[$j]." OR ".$where_break_or[$j + 1];
+					unset($where_break_or[$j + 1]);
+				}
+				
+				preg_match('/([\`a-z0-9\_\-]+)[\s]{0,1}(\=|LIKE|\<|\>|\<\=|\>\=|!\=)[\s]{0,1}(.*)/i', $where_break_or[$j], $matches);
+				if(count($matches) < 4) {
+					preg_match('/([\`a-z0-9\_\-]+)[\s]{0,1}(IN)[\s]{0,1}(.*)/i', $where_break_or[$j], $matches);
+					if(count($matches) < 4) {
+						unset($where_break_or[$j]);
+						continue;
+					}
+						
+					$cmatches = explode(',', substr($matches[3], 1, -1));
+					$matches_c = count($cmatches);
+					for($k = 0; $k < $matches_c; $k++) {
+						$cmatches[$k] = trim($cmatches[$k]);
+						if(substr($cmatches[$k], 0, 1) == "'" OR substr($cmatches[$k], 0, 1) == '"') {
+							$where_values[] = substr($cmatches[$k], 1, -1);
+						} else {
+							$where_values[] = $cmatches[$k];
+						}
+						
+						$cmatches[$k] = "?";
+					}
+					
+					$where_break_or[$j] = str_replace($matches[3], '('.implode(',', $cmatches).')', $where_break_or[$j]);
+				} else {
+					if(substr($matches[3], 0, 1) == "'" OR substr($matches[3], 0, 1) == '"') {
+						$where_values[] = substr($matches[3], 1, -1);
+					} else {
+						$where_values[] = $matches[3];
+					}
+					
+					$where_break_or[$j] = str_replace($matches[3], '?', $where_break_or[$j]);
+				}
+			}
+			
+			$where_break[$i] = implode(' OR ', $where_break_or);
+		}
+		
+		$where_break = implode(' AND ', $where_break);
+		$new_query .= $where_break.$new_subquery;
+		return array('query' => $new_query, 'values' => $where_values);
+	}
+	
+	function insert_id($name = "") {
+		return $this->db->lastInsertId($name);
+	}
+	
+	function affected_rows() {
+		$this->get_execution_time();
+		
+		$count = $this->current_link->rowCount();
+		
+		$time_spent = $this->get_execution_time();
+		$this->query_time += $time_spent;
+		
+		return $count;
+	}
+	
+	function num_rows($parameter) {
+		$this->get_execution_time();
+		
+		$count = $parameter->rowCount();
+		
+		$time_spent = $this->get_execution_time();
+		$this->query_time += $time_spent;
+		
+		return $count;
+	}
+	
+	function fetch($parameter, $type, $cursor = PDO::FETCH_ORI_NEXT, $offset = 0) {
+		if(!is_a($parameter, 'PDOStatement')) {
+			return false;
+		}
+		
+		$this->get_execution_time();
+
+		$this->current_link = $parameter->fetch($type, $cursor, $offset);
+		
+		$time_spent = $this->get_execution_time();
+		$this->query_time += $time_spent;
+		
+		return $this->current_link;
+	}
+	
+	function fetch_object($parameter) {
+		if(!is_a($parameter, 'PDOStatement')) {
+			return false;
+		}
+		
+		$this->get_execution_time();
+
+		$this->current_link = $parameter->fetch(PDO::FETCH_OBJ);
+		
+		$time_spent = $this->get_execution_time();
+		$this->query_time += $time_spent;
+		
+		return $this->current_link;
+	}
+	
+	function fetch_array($parameter) {
+		if(!is_a($parameter, 'PDOStatement')) {
+			return false;
+		}
+		
+		$this->get_execution_time();
+
+		$this->current_link = $parameter->fetch(PDO::FETCH_ASSOC);
+		
+		$time_spent = $this->get_execution_time();
+		$this->query_time += $time_spent;
+		
+		return $this->current_link;
+	}
+	
+	function fetch_array_all($parameter) {
+		if(!is_a($parameter, 'PDOStatement')) {
+			return false;
+		}
+		
+		$this->get_execution_time();
+
+		$this->current_link = $parameter->fetchAll(PDO::FETCH_ASSOC);
+		
+		$time_spent = $this->get_execution_time();
+		$this->query_time += $time_spent;
+		
+		return $this->current_link;
+	}
+	
+	function get_execution_time() {
+		static $time_start;
+		$time = microtime(true);
+
+		if(!$time_start) {
+			$time_start = $time;
+			return;
+		} else {
+			$total = $time - $time_start;
+			if($total < 0) {
+				$total = 0;
+			}
+			$time_start = 0;
+			return $total;
+		}
+	}
+	
+	function error($num = 2) {
+		if(is_a($this->current_link, 'PDOStatement')) {
+			return $this->current_link->errorInfo($num);
+		} else {
+			if($num = 1) {
+				return 0;
+			} else {
+				return "";
+			}
+		}
+	}
+}
+
+if(version_compare(PHP_VERSION, '7.0', '>=')) {
 	define('MYSQL_BOTH', 0);
 	define('MYSQL_NUM', 1);
 	define('MYSQL_ASSOC', 2);
@@ -20,340 +354,6 @@ if(version_compare(PHP_VERSION, '7.0', '<')) {
 	//Define NO_PREPARE (for global and always) or use MySQL_API_PDO::app()->noPrepare(true) (for once or sometimes) || MySQL_API_PDO::app()->noPrepare(false) (to start emulate again)
 	//if this library should not emulate prepare statements and just run the query
 	//Remember, the values don't get escaped if you don't define NO_PREPARE
-	
-	class MySQL_API_PDO {
-		public $query_time = 0;
-		public $query_count = 0; 
-		private $connect = array('host' => '', 'user' => '', 'password' => '', 'db' => '');
-		private $current_link = NULL;
-		private $db = NULL;
-		private $emulate_prepare = true;
-		static protected $instance = NULL;
-		
-		function __construct() {
-			
-		}
-		
-		function __destruct() {
-			
-		}
-		
-		private function __clone() {
-			
-		}
-		
-		private function __wakeup() {
-			
-		}
-		
-		/* Returns if the class emulates prepared statements */
-		function getPrepare() {
-			return $this->emulate_prepare;
-		}
-		
-		/* Tells the class to stop (or start) emulating prepared statements */
-		function noPrepare($val) {
-			$this->emulate_prepare = !(bool) $val;
-		}
-		
-		static function app() {
-			if(self::$instance === NULL OR is_a(self::$instance, 'MySQL_API_PDO') === false) {
-				self::$instance = new MySQL_API_PDO();
-			}
-			
-			return self::$instance;
-		}
-		
-		function connect_db($host, $user, $password, $db, $driver = array()) {
-			$this->get_execution_time();
-			
-			try {
-				$this->db = new PDO("mysql:host=".$host.";dbname=".$db.";charset=".DB_CONNECT_CHARSET, $user, $password, $driver);
-				$this->db->setAttribute(PDO::ATTR_EMULATE_PREPARES, false);
-				$this->db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-				
-				$this->connect = array('host' => $host, 'user' => $user, 'password' => $password, 'db' => $db);
-			} catch(PDOException $e) {
-				throw new Exception("Unable to connect. Error: ".$e->getMessage());
-			}
-			
-			$time_spent = $this->get_execution_time();
-			$this->query_time += $time_spent;
-			
-			return $this->db;
-		}
-		
-		function connect_new_db($dbname) {
-			return $this->db->exec("USE ".$dbname);
-		}
-		
-		function get_databasename() {
-			return $this->connect['db'];
-		}
-		
-		function close_link() {
-			if(is_a($this->current_link, 'PDOStatement')) {
-				@$this->current_link->closeCursor();
-			}
-			
-			$this->current_link = NULL;
-			$this->db = NULL;
-		}
-		
-		function check_db_uptime() {
-			if(!is_a($this->db, 'PDO')) {
-				$this->close_link();
-				$this->db = $this->connect_db($connect['host'], $connect['user'], $connect['password'], $connect['db']);
-			} else {
-				try {
-					$sql = $this->db->query("SELECT 1");
-					if($sql === false) {
-						$this->close_link();
-						$this->db = $this->connect_db($connect['host'], $connect['user'], $connect['password'], $connect['db']);
-					}
-				} catch(PDOException $e) {
-					$this->close_link();
-					$this->db = $this->connect_db($connect['host'], $connect['user'], $connect['password'], $connect['db']);
-				}
-			}
-		}
-		
-		function getAttribute($attr) {
-			return $this->db->getAttribute($attr);
-		}
-		
-		function query($query) {
-			$this->get_execution_time();
-			
-			if(!defined('NO_PREPARE') AND $this->emulate_prepare === true AND strpos($query, 'WHERE') !== false) {
-				$new = $this->prepare_where($query);
-				$query = $new['query'];
-				$values = $new['values'];
-			} else {
-				$values = array();
-			}
-			
-			try {
-				if(!empty($values)) {
-					$this->current_link = $this->db->prepare($query);
-					$this->current_link->execute($values);
-				} else {
-					$this->current_link = $this->db->query($query);
-				}
-			} catch(PDOException $e) {
-				throw new Exception("SQL Error: ".$e->getMessage()." | Query: ".$query);
-			}
-			
-			$time_spent = $this->get_execution_time();
-			$this->query_time += $time_spent;
-			$this->query_count++;
-			
-			return $this->current_link;
-		}
-		
-		private function prepare_where($query) {
-			$strpos_where = strpos($query, 'WHERE') + 6;
-			$strpos_limit = (int) strpos($query, 'LIMIT');
-			$strpos_group = (int) strpos($query, 'GROUP BY');
-			$strpos_order = (int) strpos($query, 'ORDER BY');
-			
-			$new_query = substr($query, 0, $strpos_where);
-			if($strpos_limit > 0 AND $strpos_limit < $strpos_group AND $strpos_limit < $strpos_order) {
-				$where = substr($query, $strpos_where, $strpos_limit);
-				$new_subquery = substr($query, $strpos_limit);
-			} elseif($strpos_group > 0 AND $strpos_group < $strpos_limit AND $strpos_group < $strpos_order) {
-				$where = substr($query, $strpos_where, $strpos_group);
-				$new_subquery = substr($query, $strpos_group);
-			} elseif($strpos_order > 0 AND $strpos_order < $strpos_limit AND $strpos_order < $strpos_group) {
-				$where = substr($query, $strpos_where, $strpos_order);
-				$new_subquery = substr($query, $strpos_order);
-			} else {
-				$where = substr($query, $strpos_where);
-				$new_subquery = "";
-			}
-			
-			$where_values = array();
-			$where_break = explode(' AND ', $where);
-			$where_break_c = count($where_break);
-			
-			for($i = 0; $i < $where_break_c; $i++) {
-				if(!isset($where_break[$i])) {
-					continue;
-				}
-				
-				if(isset($where_break[$i + 1]) AND preg_match('/([\`a-z0-9\_\-]+)[\s]{0,1}(\=|LIKE|\<|\>|\<\=|\>\=|!\=)[\s]{0,1}(.*)/i', $where_break[$i + 1]) != 1) {
-					$where_break[$i] = $where_break[$i]." AND ".$where_break[$i + 1];
-					unset($where_break[$i + 1]);
-				}
-				
-				$where_break_or = explode(' OR ', $where_break[$i]);
-				$where_break_or_c = count($where_break_or);
-				for($j = 0; $j < $where_break_or_c; $j++) {
-					if(!isset($where_break_or[$i])) {
-						continue;
-					}
-					
-					if(isset($where_break_or[$j + 1]) AND preg_match('/([\`a-z0-9\_\-]+)[\s]{0,1}(\=|LIKE|\<|\>|\<\=|\>\=|!\=)[\s]{0,1}(.*)/i', $where_break_or[$j + 1]) != 1) {
-						$where_break_or[$j] = $where_break_or[$j]." OR ".$where_break_or[$j + 1];
-						unset($where_break_or[$j + 1]);
-					}
-					
-					preg_match('/([\`a-z0-9\_\-]+)[\s]{0,1}(\=|LIKE|\<|\>|\<\=|\>\=|!\=)[\s]{0,1}(.*)/i', $where_break_or[$j], $matches);
-					if(count($matches) < 4) {
-						preg_match('/([\`a-z0-9\_\-]+)[\s]{0,1}(IN)[\s]{0,1}(.*)/i', $where_break_or[$j], $matches);
-						if(count($matches) < 4) {
-							unset($where_break_or[$j]);
-							continue;
-						}
-						
-						$cmatches = explode(',', substr($matches[3], 1, -1));
-						$matches_c = count($cmatches);
-						for($k = 0; $k < $matches_c; $k++) {
-							$cmatches[$k] = trim($cmatches[$k]);
-							if(substr($cmatches[$k], 0, 1) == "'" OR substr($cmatches[$k], 0, 1) == '"') {
-								$where_values[] = substr($cmatches[$k], 1, -1);
-							} else {
-								$where_values[] = $cmatches[$k];
-							}
-							
-							$cmatches[$k] = "?";
-						}
-						
-						$where_break_or[$j] = str_replace($matches[3], '('.implode(',', $cmatches).')', $where_break_or[$j]);
-					} else {
-						if(substr($matches[3], 0, 1) == "'" OR substr($matches[3], 0, 1) == '"') {
-							$where_values[] = substr($matches[3], 1, -1);
-						} else {
-							$where_values[] = $matches[3];
-						}
-						
-						$where_break_or[$j] = str_replace($matches[3], '?', $where_break_or[$j]);
-					}
-				}
-				
-				$where_break[$i] = implode(' OR ', $where_break_or);
-			}
-			
-			$where_break = implode(' AND ', $where_break);
-			$new_query .= $where_break.$new_subquery;
-			return array('query' => $new_query, 'values' => $where_values);
-		}
-		
-		function insert_id($name = "") {
-			return $this->db->lastInsertId($name);
-		}
-		
-		function affected_rows() {
-			$this->get_execution_time();
-			
-			$count = $this->current_link->rowCount();
-			
-			$time_spent = $this->get_execution_time();
-			$this->query_time += $time_spent;
-			
-			return $count;
-		}
-		
-		function num_rows($parameter) {
-			$this->get_execution_time();
-			
-			$count = $parameter->rowCount();
-			
-			$time_spent = $this->get_execution_time();
-			$this->query_time += $time_spent;
-			
-			return $count;
-		}
-		
-		function fetch($parameter, $type, $cursor = PDO::FETCH_ORI_NEXT, $offset = 0) {
-			if(!is_a($parameter, 'PDOStatement')) {
-				return false;
-			}
-			
-			$this->get_execution_time();
-	
-			$this->current_link = $parameter->fetch($type, $cursor, $offset);
-			
-			$time_spent = $this->get_execution_time();
-			$this->query_time += $time_spent;
-			
-			return $this->current_link;
-		}
-		
-		function fetch_object($parameter) {
-			if(!is_a($parameter, 'PDOStatement')) {
-				return false;
-			}
-			
-			$this->get_execution_time();
-	
-			$this->current_link = $parameter->fetch(PDO::FETCH_OBJ);
-			
-			$time_spent = $this->get_execution_time();
-			$this->query_time += $time_spent;
-			
-			return $this->current_link;
-		}
-		
-		function fetch_array($parameter) {
-			if(!is_a($parameter, 'PDOStatement')) {
-				return false;
-			}
-			
-			$this->get_execution_time();
-	
-			$this->current_link = $parameter->fetch(PDO::FETCH_ASSOC);
-			
-			$time_spent = $this->get_execution_time();
-			$this->query_time += $time_spent;
-			
-			return $this->current_link;
-		}
-		
-		function fetch_array_all($parameter) {
-			if(!is_a($parameter, 'PDOStatement')) {
-				return false;
-			}
-			
-			$this->get_execution_time();
-	
-			$this->current_link = $parameter->fetchAll(PDO::FETCH_ASSOC);
-			
-			$time_spent = $this->get_execution_time();
-			$this->query_time += $time_spent;
-			
-			return $this->current_link;
-		}
-		
-		function get_execution_time() {
-			static $time_start;
-			$time = microtime(true);
-	
-			if(!$time_start) {
-				$time_start = $time;
-				return;
-			} else {
-				$total = $time - $time_start;
-				if($total < 0) {
-					$total = 0;
-				}
-				$time_start = 0;
-				return $total;
-			}
-		}
-		
-		function error($num = 2) {
-			if(is_a($this->current_link, 'PDOStatement')) {
-				return $this->current_link->errorInfo($num);
-			} else {
-				if($num = 1) {
-					return 0;
-				} else {
-					return "";
-				}
-			}
-		}
-	}
 	
 	function mysql_affected_rows($link = NULL) {
 		return MySQL_API_PDO::app()->affected_rows();
