@@ -5,8 +5,16 @@
  *
  * Website: http://charuru.moe
  * License: https://github.com/CharlotteDunois/MySQL_API_PDO/blob/master/LICENSE
- * $ 25.01.2016 21:03 Charlotte Dunois $
+ * $ 25.01.2016 21:16 Charlotte Dunois $
 **/
+
+if(!defined('DB_CONNECT_CHARSET')) { // Define DB_CONNECT_CHARSET before you include/require this file if you want to use a different charset than utf8mb4 (the true utf8 charset)
+	define('DB_CONNECT_CHARSET', 'utf8mb4');
+}
+
+//Define NO_PREPARE (for global and always) or use MySQL_API_PDO::app()->noPrepare(true) (for once or sometimes) || MySQL_API_PDO::app()->noPrepare(false) (to start emulate again)
+//if this library should not emulate prepare statements and just run the query
+//Remember, the values don't get escaped if you don't define NO_PREPARE
 
 class MySQL_API_PDO {
 	public $query_time = 0;
@@ -192,7 +200,7 @@ class MySQL_API_PDO {
 						unset($where_break_or[$j]);
 						continue;
 					}
-						
+					
 					$cmatches = explode(',', substr($matches[3], 1, -1));
 					$matches_c = count($cmatches);
 					for($k = 0; $k < $matches_c; $k++) {
@@ -258,7 +266,7 @@ class MySQL_API_PDO {
 		}
 		
 		$this->get_execution_time();
-
+	
 		$this->current_link = $parameter->fetch($type, $cursor, $offset);
 		
 		$time_spent = $this->get_execution_time();
@@ -273,7 +281,7 @@ class MySQL_API_PDO {
 		}
 		
 		$this->get_execution_time();
-
+	
 		$this->current_link = $parameter->fetch(PDO::FETCH_OBJ);
 		
 		$time_spent = $this->get_execution_time();
@@ -288,7 +296,7 @@ class MySQL_API_PDO {
 		}
 		
 		$this->get_execution_time();
-
+	
 		$this->current_link = $parameter->fetch(PDO::FETCH_ASSOC);
 		
 		$time_spent = $this->get_execution_time();
@@ -303,7 +311,7 @@ class MySQL_API_PDO {
 		}
 		
 		$this->get_execution_time();
-
+	
 		$this->current_link = $parameter->fetchAll(PDO::FETCH_ASSOC);
 		
 		$time_spent = $this->get_execution_time();
@@ -315,17 +323,17 @@ class MySQL_API_PDO {
 	function get_execution_time() {
 		static $time_start;
 		$time = microtime(true);
-
+	
 		if(!$time_start) {
-			$time_start = $time;
-			return;
+		$time_start = $time;
+		return;
 		} else {
-			$total = $time - $time_start;
-			if($total < 0) {
-				$total = 0;
-			}
-			$time_start = 0;
-			return $total;
+		$total = $time - $time_start;
+		if($total < 0) {
+			$total = 0;
+		}
+		$time_start = 0;
+		return $total;
 		}
 	}
 	
@@ -346,14 +354,6 @@ if(version_compare(PHP_VERSION, '7.0', '>=')) {
 	define('MYSQL_BOTH', 0);
 	define('MYSQL_NUM', 1);
 	define('MYSQL_ASSOC', 2);
-	
-	if(!defined('DB_CONNECT_CHARSET')) { // Define DB_CONNECT_CHARSET before you include/require this file if you want to use a different charset than utf8mb4 (the true utf8 charset)
-		define('DB_CONNECT_CHARSET', 'utf8mb4');
-	}
-	
-	//Define NO_PREPARE (for global and always) or use MySQL_API_PDO::app()->noPrepare(true) (for once or sometimes) || MySQL_API_PDO::app()->noPrepare(false) (to start emulate again)
-	//if this library should not emulate prepare statements and just run the query
-	//Remember, the values don't get escaped if you don't define NO_PREPARE
 	
 	function mysql_affected_rows($link = NULL) {
 		return MySQL_API_PDO::app()->affected_rows();
