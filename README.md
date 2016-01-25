@@ -21,4 +21,4 @@ Usage
 
 5. Good Luck and God speed
 
-* Without defining `NO_PREPARE` values don't get escaped as it will be unnecessary due to Prepared Statements. Defining `NO_PREPARE` will disable emulation of Prepared Statements and make `mysql_(real_)escape_string` add slashes with `add_slashes`. Please note that use of addslashes() can be cause of security issues on most databases. Which is also why this library is only for testing purpose.
+* Without defining `NO_PREPARE` values don't get escaped as it will be unnecessary due to Prepared Statements. Defining `NO_PREPARE` will disable emulation of Prepared Statements and make `mysql_(real_)escape_string` add slashes with `addslashes()`. Please note that use of addslashes() can be cause of security issues on most databases. Which is also why this library is only for testing purpose.
